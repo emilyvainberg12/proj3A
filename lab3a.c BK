@@ -1,0 +1,96 @@
+#include <getopt.h>
+#include <stdio.h>
+#include <errno.h>
+#include <unistd.h>
+#include <time.h>
+#include <fcntl.h>
+#include <stdlib.h>
+#include <limits.h>
+#include <string.h>
+#include <stdint.h>
+#include "ext2_fs.h"
+
+struct ext2_super_block super; 
+struct ext2_group_desc group_descriptor; 
+char block_bitmap[1024]; 
+int fd = 0; 
+unsigned int directory_count = 0; 
+unsigned int free_inodes_count = 0; 
+unsigned int free_blocks_count = 0; 
+unsigned long bitmap_block_address = 0; 
+unsigned int blocks_count = 0;      //2. Total number of blocks (decimal)
+unsigned int inodes_count = 0;      //3. Total number of i-nodes (decimal)
+unsigned int block_size = 0;        //4. Block size (in bytes, decimal)
+unsigned int inode_size = 0;        //5. i-node size (in bytes, decimal)
+unsigned int blocks_per_group = 0;  //6. blocks per group (decimal)
+unsigned int inodes_per_group = 0;  //7. i-nodes per group (decimal)
+unsigned int first_free_inode = 0;  //8. first non-reserved i-node (decimal)
+
+
+
+int main(argc, char *argv[]) {
+
+    fd = open(argv[1], O_RDONLY);
+
+    /* SUPERBLOCK SUMMARY BEGIN */
+    pread(fd, &super, sizeof(super), 1024);
+    blocks_count = super.s_blocks_count;
+    inodes_count = super.s_inodes_count;
+    block_size = 1024 << super.s_log_block_size;
+    inode_size = super.s_inode_size;
+    blocks_per_group = super.s_blocks_per_group;
+    inodes_per_group = super.s_inodes_per_group;
+    first_free_inode = super.s_first_ino;
+    printf(stdout, "SUPERBLOCK,%d,%d,%d,%d,%d,%d,%d\n", blocks_count, inodes_count, block_size, inode_size, blocks_per_group,
+    inodes_per_group, first_free_inode); 
+    /* SUPER BLOCK SUMMARY END */
+
+    /* GROUP SUMMARY BEGIN */
+    int group_d_offset = 0; //Offset for group descriptor
+    if(block_size == 1024){ //If block size = 1024 -> start at block 2
+        group_d_offset = block_size * 2;
+    }
+    else if(block_size > 1024){ //If block size > 1024 -> start at block 1
+        group_d_offset = block_size;
+    }
+    else{   //If block size < 1024 -> Not possible
+        exit(2);
+    }
+    unsigned int group_count = 1;   //1 group bc there is only 1 file??
+    //unsigned int group_count = blocks_count / blocks_per_group; //group_count = total number of groups
+    int curr_index = 0;
+    for(curr_index = 0; curr_index < group_count; curr_index++){
+        pread(fd, &group_descriptor, sizeof(group_descriptor), group_d_offset + (curr_index*sizeof(group_descriptor)));
+        printf(stdout, "GROUP,%d,%d,%d,%d,%d,%d,%d,%d", curr_index, blocks_per_group, inodes_per_group,
+        group_descriptor.bg_free_blocks_count, group_descriptor.bg_free_inodes_count, group_descriptor.bg_block_bitmap,
+        group_descriptor.bg_inode_bitmap, group_descriptor.bg_inode_table);
+    }
+    /* GROUP SUMMARY END */
+
+
+    bitmap_block = group_descriptor.bg_block_bitmap;		/* Blocks bitmap block */
+	//group_descriptor.bg_inode_bitmap;		/* Inodes bitmap block */
+	//group_descriptor.bg_inode_table;		/* Inodes table block */
+	free_blocks_count = group_descriptor.bg_free_blocks_count;	/* Free blocks count */
+	free_inodes_count = group_descriptor.bg_free_inodes_count;	/* Free inodes count */
+	directory_count = group_descriptor.bg_used_dirs_count;	/* Directories count */
+
+
+     printf("%s","%d", "%d", "GROUP", bitmap_block, free_blocks_count, free_inodes_count); 
+
+    // free block entries
+    pread(fd, &block_bitmap, sizeof(block_bitmap), bitmap_block_address);
+    //  1 -> used, 0 -> free 
+
+    for (int i = 0; i < 1024{
+        char x = block_bitmap[i]; 
+        for (int j = 0; j < 8; j++){
+            if (((x << j) & 128) != 1){
+                printf("%s", "%d", 'BFREE', i*8 +j); 
+            }
+        }
+        
+    }
+
+    return 0;
+}
