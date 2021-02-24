@@ -1,7 +1,3 @@
-//parse and output data in superblock
-
-
-// TODO: CHECK ABOUT BLOCKS_PER_GROUP FOR: "GROUP, 0, 8192"
 #include <getopt.h>
 #include <stdio.h>
 #include <errno.h>
@@ -16,6 +12,7 @@
 
 struct ext2_super_block super; 
 struct ext2_group_desc group_descriptor; 
+struct ext2_dir_entry directory;
 int fd = 0; 
 unsigned int inodes_count = 0; 
 unsigned int blocks_count = 0; 
@@ -34,6 +31,7 @@ void b_free(int group, unsigned int block_bitmap);
 void i_free(int group, int block_bitmap, int inode_table); 
 unsigned long offset_block(unsigned int block);
 void inodes_summary(unsigned int inode_table_id, unsigned int num_inode, unsigned int index);
+void directory_entries(unsigned int parent_inode, unsigned int block);
 
 int main(int argc, char *argv[]) {
     //fd = open(argv[1], O_RDONLY);
@@ -153,20 +151,27 @@ void inodes_summary(unsigned int inode_table_id, unsigned int num_inode, unsigne
    // printf("hello"); 
 }
 
-unsigned long offset_block(unsigned int block) {
-	return 1024+ (block - 1) * block_size;
-}
-
-
-
-
 /* DIRECTORY BEGIN */
+void directory_entries(unsigned int parent_inode, unsigned int block){
+    unsigned long offset = offset_block(block);
+    unsigned int num_bytes = 0;
+    while (num_bytes < block_size){
+        pread(fd, &directory, sizeof(directory), offset + num_bytes);
+        if (directory.inode != 0) { 
+            fprintf(stdout, "DIRENT,%d,%d,%d,%d,%d,%s\n", parent_inode, num_bytes, directory.inode, directory.rec_len, directory.name_len, directory.name); 
+        }
+        num_bytes += directory.rec_len;
+    }
+}
 /* DIRECTORY END */
+
+
 
 /* INDIRECTBLOCK BEGIN */
 /* INDIRECTBLOCK END */
 
-
-
+unsigned long offset_block(unsigned int block) {
+	return 1024+ (block - 1) * block_size;
+}
 
 
