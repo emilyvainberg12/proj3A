@@ -1,3 +1,7 @@
+// NAME: Emily Vainberg, Brian Kwon 
+// EMAIL: emily.vainberg@gmail.com, briankwon123@gmail.com
+// ID: 605341878, 405166663
+
 #include <getopt.h>
 #include <stdio.h>
 #include <errno.h>
@@ -35,6 +39,8 @@ unsigned int directory_count = 0;
 unsigned int free_inodes_count = 0; 
 unsigned int free_blocks_count = 0; 
 unsigned long bitmap_block_address = 0; 
+unsigned int tot_blocks_in_group = 0;
+unsigned int num_inodes_in_group = 0;
 
 void read_group(int group, int total_groups); 
 void b_free(int group, unsigned int block_bitmap); 
@@ -44,8 +50,16 @@ void inodes_summary(int inode_table, unsigned int num_inodes_in_group);
 void get_time(time_t epoch_time, char* buffer);
 
 int main(int argc, char *argv[]) {
-    //fd = open(argv[1], O_RDONLY);
-    fd = open("trivial.img", O_RDONLY);
+    if (argc != 2) {
+		fprintf(stderr, "wrong arguments entered \n");
+		exit(1);
+	}
+
+    if ((fd = open(argv[1], O_RDONLY)) == -1 ){
+        fprintf(stderr, " error opening file \n");
+		exit(1);
+    }
+    //  fd = open("trivial.img", O_RDONLY);
 
    /* SUPERBLOCK SUMMARY BEGIN */
     pread(fd, &super, sizeof(super), 1024);
@@ -56,26 +70,18 @@ int main(int argc, char *argv[]) {
     blocks_per_group = super.s_blocks_per_group;
     inodes_per_group = super.s_inodes_per_group;
     first_free_inode = super.s_first_ino;
+    tot_blocks_in_group = super.s_blocks_per_group;
+    num_inodes_in_group = super.s_inodes_per_group;
+
     fprintf(stdout, "SUPERBLOCK,%d,%d,%d,%d,%d,%d,%d\n", blocks_count, inodes_count, block_size, inode_size, blocks_per_group,
     inodes_per_group, first_free_inode); 
     /* SUPER BLOCK SUMMARY END */
-
-    int num_groups = super.s_blocks_count / super.s_blocks_per_group;
-    if ((double) num_groups < (double) super.s_blocks_count / super.s_blocks_per_group) {
-		num_groups++;
-	}
-    if (num_groups <= 0){
-        num_groups = 1; 
-    }
 
     read_group(0, 1); 
     return 0; 
 }
 
 void read_group(int group, int total_groups){
-
-    unsigned int tot_blocks_in_group = super.s_blocks_per_group;
-    unsigned int num_inodes_in_group = super.s_inodes_per_group;
 
 	if (group == total_groups - 1) {
 		tot_blocks_in_group = blocks_count - (blocks_per_group * (total_groups - 1));
@@ -205,7 +211,7 @@ void inodes_summary(int inode_table, unsigned int num_inodes_in_group){
 
             //if i-node is directory
             if (type =='d'){
-                int logical_offset = 0; 
+                unsigned int logical_offset = 0; 
                 for (unsigned int k = 0; k < curr_inode.i_blocks; k++){
 
                     unsigned long address = curr_inode.i_block[k]; 
@@ -222,11 +228,13 @@ void inodes_summary(int inode_table, unsigned int num_inodes_in_group){
             }
 
             uint32_t *block_ptrs = malloc(block_size);
+            uint32_t num_ptrs = block_size / sizeof(uint32_t);
+            uint32_t *indirect2_ptrs = malloc(block_size);
 
             if (curr_inode.i_block[12] != 0) {
-                uint32_t num_ptrs = block_size / sizeof(uint32_t);
+
                 pread(fd, block_ptrs, block_size, offset_block(curr_inode.i_block[12]));
-                
+
                 for (unsigned int j = 0; j < num_ptrs; j++) {
                     if (block_ptrs[j] != 0) {
                         fprintf(stdout, "INDIRECT,%d,%d,%d,%d,%d\n", i+1, 1, 12 + j, curr_inode.i_block[12], block_ptrs[j]);
@@ -235,26 +243,49 @@ void inodes_summary(int inode_table, unsigned int num_inodes_in_group){
             } 
 
             if (curr_inode.i_block[13] != 0) {
-                uint32_t *indir_block_ptrs = malloc(block_size);
-                uint32_t num_ptrs = block_size / sizeof(uint32_t);
-
-                pread(fd, indir_block_ptrs, block_size,  offset_block(curr_inode.i_block[13]));
+                pread(fd, indirect2_ptrs, block_size, offset_block(curr_inode.i_block[13]));
 
                 for (unsigned int j = 0; j < num_ptrs; j++) {
-                    if (indir_block_ptrs[j] != 0) {
-                        fprintf(stdout, "INDIRECT,%d,%d,%d,%d,%d\n", i+1, 2, 268+j, indir_block_ptrs[13], block_ptrs[j]); 
+                    if (indirect2_ptrs[j] != 0) {
+                        fprintf(stdout, "INDIRECT,%d,%d,%d,%d,%d\n", i+1, 2, 268+j, indirect2_ptrs[13], block_ptrs[j]); 
 
-                        pread(fd, block_ptrs, block_size, offset_block(indir_block_ptrs[j]));
+                        pread(fd, block_ptrs, block_size, offset_block(indirect2_ptrs[j]));
                           
                         for (unsigned int k = 0; k < num_ptrs; k++) {
                             if (block_ptrs[k] != 0) {
-                                fprintf(stdout, "INDIRECT,%d,%d,%d,%d,%d\n", i+1, 1, 268+k, indir_block_ptrs[j], block_ptrs[k]); 
+                                fprintf(stdout, "INDIRECT,%d,%d,%d,%d,%d\n", i+1, 1, 268+k, indirect2_ptrs[j], block_ptrs[k]); 
                             }
                         }
                     }
                 }
             }
+            if(curr_inode.i_block[14] != 0){
 
+                pread(fd, indirect2_ptrs, block_size, offset_block(curr_inode.i_block[14]));
+
+                for(unsigned int j = 0; j < num_ptrs; j++){
+                    if(indirect2_ptrs[j] != 0){
+                        fprintf(stdout, "INDIRECT,%d,%d,%d,%d,%d\n", i+1, 3, 65804+j, curr_inode.i_block[14], indirect2_ptrs[j]);
+
+                        uint32_t *indirect_ptrs = malloc(block_size);
+                        pread(fd, indirect_ptrs, block_size, offset_block(indirect2_ptrs[j]));
+
+                        for(unsigned int k = 0; k < num_ptrs; k++){
+                            if(indirect_ptrs[k] != 0){
+                                fprintf(stdout, "INDIRECT,%d,%d,%d,%d,%d\n", i+1, 2, 65804+k, indirect2_ptrs[j], indirect_ptrs[k]);
+                            }
+
+                            pread(fd, block_ptrs, block_size, offset_block(indirect_ptrs[k]));
+
+                            for(unsigned int h = 0; h < num_ptrs; h++){
+                                if(block_ptrs[h] != 0){
+                                    fprintf(stdout, "INDIRECT,%d,%d,%d,%d,%d\n", i+1, 1, 65804+h, indirect_ptrs[k], block_ptrs[h]);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
