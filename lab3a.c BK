@@ -10,6 +10,11 @@
 #include <stdint.h>
 #include "ext2_fs.h"
 #include <time.h>
+#include <sys/time.h>
+#include <sys/stat.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+
 
 struct ext2_super_block super; 
 struct ext2_group_desc group_descriptor; 
@@ -34,7 +39,7 @@ void b_free(int group, unsigned int block_bitmap);
 void i_free(int group, int block_bitmap, int inode_table); 
 unsigned long offset_block(unsigned int block);
 void inodes_summary(int inode_table, unsigned int num_inodes_in_group);
-void gmt_time(time_t epoch_time, char* buffer);
+void get_time(time_t epoch_time, char* buffer);
 
 int main(int argc, char *argv[]) {
     //fd = open(argv[1], O_RDONLY);
@@ -72,7 +77,7 @@ int main(int argc, char *argv[]) {
 void read_group(int group, int total_groups){
 
     unsigned int tot_blocks_in_group = super.s_blocks_per_group;
-    unsigned int num_inodes_in_group = super.s_inodes_per_group;
+    unsigned int num_inodes_in_group = super.s_inodes_per_group;    //May need to modulo NOTE
 
 	if (group == total_groups - 1) {
 		tot_blocks_in_group = blocks_count - (blocks_per_group * (total_groups - 1));
@@ -148,19 +153,19 @@ void i_free(int group, int block_bitmap, int inode_table){
 	}
 }
 
-void gmt_time(time_t epoch_time, char* buffer){
+void get_time(time_t epoch_time, char* buffer){
     time_t temp = epoch_time;
-    struct tm result = *gmtime(&temp);
-    strftime(buffer, 80, "%m/%d/%y %H:%M:%S", &result);
+    struct tm* result = gmtime(&temp);
+    strftime(buffer, 80, "%m/%d/%y %H:%M:%S", result);
 }
 
+/* INODES SUMMARY BEGIN */
 void inodes_summary(int inode_table, unsigned int num_inodes_in_group){
-    unsigned int num_inodes = super.s_inodes_per_group;
+    //unsigned int num_inodes = super.s_inodes_count;
     int curr_inode_location;  
-    unsigned long inode_start = block_size*inode_table; 
+    int inode_start = block_size*inode_table; 
 
-    for(int i = 0; i < num_inodes; i++){
-        
+    for(unsigned int i = 0; i < num_inodes_in_group; i++){
         curr_inode_location = inode_start + i*sizeof(struct ext2_inode);   
         pread(fd, &curr_inode, sizeof(struct ext2_inode), curr_inode_location);
         
@@ -178,53 +183,55 @@ void inodes_summary(int inode_table, unsigned int num_inodes_in_group){
             else{
                 type = '?';
             }
-        }
 
-        
-        char c_time[20];
-        char m_time[20];
-        char a_time[20];
-        gmt_time(curr_inode.i_ctime, c_time);
-        gmt_time(curr_inode.i_mtime, m_time);
-        gmt_time(curr_inode.i_atime, a_time);
+            char c_time[40];
+            char m_time[40];
+            char a_time[40];
+            get_time(curr_inode.i_ctime, c_time);
+            get_time(curr_inode.i_mtime, m_time);
+            get_time(curr_inode.i_atime, a_time);
 
-        //Print inode
-        fprintf(stdout, "INODE,%d,%c,%o,%d,%d,%d,%d,%s,%s,%s,%d,%d\n", i+1, type, curr_inode.i_mode & 0xFFF, curr_inode.i_uid, curr_inode.i_gid,
-        curr_inode.i_links_count, c_time, m_time, a_time, curr_inode.i_size, curr_inode.i_blocks);
-
-        //Print the fifteen block addresses
-        if(type == 's' && curr_inode.i_size < 60){
-            fprintf(stdout, ",%u", curr_inode.i_block[0]);
-            fprintf(stdout, "\n");
-        }
-        else if(type == 'f' || type == 'd' || type == 's'){
-            for(int x = 0; x < EXT2_NUM_BLOCKS; x++){
-                fprintf(stdout, ",%d", curr_inode.i_block[x]);
+            //Print inode
+            fprintf(stdout, "INODE,%d,%c,%o,%d,%d,%d,%s,%s,%s,%d,%d", i+1, type, curr_inode.i_mode & 0xFFF, curr_inode.i_uid, curr_inode.i_gid,
+            curr_inode.i_links_count, c_time, m_time, a_time, curr_inode.i_size, curr_inode.i_blocks);
+            // fprintf(stdout, "INODE,%d,%c,%o,%d,%d,%d,%d,%d", i+1, type, curr_inode.i_mode & 0xFFF, curr_inode.i_uid, curr_inode.i_gid,
+            // curr_inode.i_links_count, curr_inode.i_size, curr_inode.i_blocks);
+            
+            //Print the fifteen block addresses
+            if(type == 's' && curr_inode.i_size < 60){
+                fprintf(stdout, ",%u", curr_inode.i_block[0]);
+                fprintf(stdout, "\n");
             }
-            fprintf(stdout, "\n");
-        }
-
-        //if i-node is directory
-        if (type =='d'){
-            int logical_offset = 0; 
-            for (int i= 0; i < curr_inode.i_blocks; i++){
-
-                unsigned long address = curr_inode.i_block[i]; 
-                struct ext2_dir_entry entry; 
-                int offset_temp = curr_inode.i_block[i]*block_size; 
-
-                if (address != 0){
-                    while (logical_offset < block_size){
-                        pread(fd, &entry, sizeof(entry), offset_temp + logical_offset);
-                        //CHANGE -5 to parent inode number !!!!
-                        fprintf(stdout, "DIRENT,%d,%d,%d,%d,%d,%s\n", -5, logical_offset, entry.inode, entry.rec_len, entry.name_len, entry.name); 
-                        logical_offset +=entry.rec_len; 
-                    }
+            else if(type == 'f' || type == 'd' || type == 's'){
+                for(int x = 0; x < EXT2_N_BLOCKS; x++){
+                    fprintf(stdout, ",%d", curr_inode.i_block[x]);
                 }
-        } 
+                fprintf(stdout, "\n");
+            }
+
+            //if i-node is directory
+            if (type =='d'){
+                int logical_offset = 0; 
+                for (int k= 0; k < curr_inode.i_blocks; k++){
+
+                    unsigned long address = curr_inode.i_block[k]; 
+                    struct ext2_dir_entry entry; 
+                    int offset_temp = curr_inode.i_block[k]*block_size; 
+
+                    if (address != 0){
+                        while (logical_offset < block_size){
+                            pread(fd, &entry, sizeof(entry), offset_temp + logical_offset);
+                            //CHANGE -5 to parent inode number !!!!
+                            fprintf(stdout, "DIRENT,%d,%d,%d,%d,%d,'%s'\n", i+1, logical_offset, entry.inode, entry.rec_len, entry.name_len, entry.name); 
+                            logical_offset +=entry.rec_len; 
+                        }
+                    }
+                } 
+            }
         }
     }
 }
+/* INODES SUMMARY END */
 
 /* INDIRECTBLOCK BEGIN */
 /* INDIRECTBLOCK END */
