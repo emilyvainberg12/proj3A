@@ -9,30 +9,38 @@
 #include <string.h>
 #include <stdint.h>
 #include "ext2_fs.h"
+#include <time.h>
 
 struct ext2_super_block super; 
 struct ext2_group_desc group_descriptor; 
-char block_bitmap[1024]; 
+struct ext2_dir_entry directory;
+struct ext2_inode curr_inode; 
+
 int fd = 0; 
+unsigned int inodes_count = 0; 
+unsigned int blocks_count = 0; 
+unsigned int blocks_per_group = 0; 
+unsigned int inodes_per_group = 0; 
+unsigned int first_free_inode = 0; 
+unsigned int inode_size = 0; 
+unsigned int block_size = 0; 
 unsigned int directory_count = 0; 
 unsigned int free_inodes_count = 0; 
 unsigned int free_blocks_count = 0; 
 unsigned long bitmap_block_address = 0; 
-unsigned int blocks_count = 0;      //2. Total number of blocks (decimal)
-unsigned int inodes_count = 0;      //3. Total number of i-nodes (decimal)
-unsigned int block_size = 0;        //4. Block size (in bytes, decimal)
-unsigned int inode_size = 0;        //5. i-node size (in bytes, decimal)
-unsigned int blocks_per_group = 0;  //6. blocks per group (decimal)
-unsigned int inodes_per_group = 0;  //7. i-nodes per group (decimal)
-unsigned int first_free_inode = 0;  //8. first non-reserved i-node (decimal)
 
+void read_group(int group, int total_groups); 
+void b_free(int group, unsigned int block_bitmap); 
+void i_free(int group, int block_bitmap, int inode_table); 
+unsigned long offset_block(unsigned int block);
+void inodes_summary(int inode_table, unsigned int num_inodes_in_group);
+void gmt_time(time_t epoch_time, char* buffer);
 
+int main(int argc, char *argv[]) {
+    //fd = open(argv[1], O_RDONLY);
+    fd = open("trivial.img", O_RDONLY);
 
-int main(argc, char *argv[]) {
-
-    fd = open(argv[1], O_RDONLY);
-
-    /* SUPERBLOCK SUMMARY BEGIN */
+   /* SUPERBLOCK SUMMARY BEGIN */
     pread(fd, &super, sizeof(super), 1024);
     blocks_count = super.s_blocks_count;
     inodes_count = super.s_inodes_count;
@@ -41,56 +49,186 @@ int main(argc, char *argv[]) {
     blocks_per_group = super.s_blocks_per_group;
     inodes_per_group = super.s_inodes_per_group;
     first_free_inode = super.s_first_ino;
-    printf(stdout, "SUPERBLOCK,%d,%d,%d,%d,%d,%d,%d\n", blocks_count, inodes_count, block_size, inode_size, blocks_per_group,
+    fprintf(stdout, "SUPERBLOCK,%d,%d,%d,%d,%d,%d,%d\n", blocks_count, inodes_count, block_size, inode_size, blocks_per_group,
     inodes_per_group, first_free_inode); 
     /* SUPER BLOCK SUMMARY END */
 
-    /* GROUP SUMMARY BEGIN */
-    int group_d_offset = 0; //Offset for group descriptor
+    int num_groups = super.s_blocks_count / super.s_blocks_per_group;
+    if ((double) num_groups < (double) super.s_blocks_count / super.s_blocks_per_group) {
+		num_groups++;
+	}
+    if (num_groups <= 0){
+        num_groups = 1; 
+    }
+
+    read_group(0, 1); 
+     
+    // for (int i = 0; i < num_groups; i++){
+    //     read_group(i, num_groups); 
+    // }
+    return 0; 
+}
+
+void read_group(int group, int total_groups){
+
+    unsigned int tot_blocks_in_group = super.s_blocks_per_group;
+    unsigned int num_inodes_in_group = super.s_inodes_per_group;
+
+	if (group == total_groups - 1) {
+		tot_blocks_in_group = blocks_count - (blocks_per_group * (total_groups - 1));
+	}
+
+	if (group == total_groups - 1) {
+		num_inodes_in_group = inodes_count - (inodes_per_group * (total_groups - 1));
+	}
+
+    int group_d_offset = 0; 
     if(block_size == 1024){ //If block size = 1024 -> start at block 2
         group_d_offset = block_size * 2;
     }
     else if(block_size > 1024){ //If block size > 1024 -> start at block 1
         group_d_offset = block_size;
     }
-    else{   //If block size < 1024 -> Not possible
+    else {   //If block size < 1024 -> Not possible
         exit(2);
     }
-    unsigned int group_count = 1;   //1 group bc there is only 1 file??
-    //unsigned int group_count = blocks_count / blocks_per_group; //group_count = total number of groups
-    int curr_index = 0;
-    for(curr_index = 0; curr_index < group_count; curr_index++){
-        pread(fd, &group_descriptor, sizeof(group_descriptor), group_d_offset + (curr_index*sizeof(group_descriptor)));
-        printf(stdout, "GROUP,%d,%d,%d,%d,%d,%d,%d,%d", curr_index, blocks_per_group, inodes_per_group,
-        group_descriptor.bg_free_blocks_count, group_descriptor.bg_free_inodes_count, group_descriptor.bg_block_bitmap,
-        group_descriptor.bg_inode_bitmap, group_descriptor.bg_inode_table);
-    }
-    /* GROUP SUMMARY END */
 
+    pread(fd, &group_descriptor, sizeof(group_descriptor), group_d_offset + (group*sizeof(group_descriptor)));
+    fprintf(stdout, "GROUP,%d,%d,%d,%d,%d,%d,%d,%d\n", group, tot_blocks_in_group, num_inodes_in_group,
+    group_descriptor.bg_free_blocks_count, group_descriptor.bg_free_inodes_count, group_descriptor.bg_block_bitmap,
+    group_descriptor.bg_inode_bitmap, group_descriptor.bg_inode_table);
 
-    bitmap_block = group_descriptor.bg_block_bitmap;		/* Blocks bitmap block */
-	//group_descriptor.bg_inode_bitmap;		/* Inodes bitmap block */
-	//group_descriptor.bg_inode_table;		/* Inodes table block */
-	free_blocks_count = group_descriptor.bg_free_blocks_count;	/* Free blocks count */
-	free_inodes_count = group_descriptor.bg_free_inodes_count;	/* Free inodes count */
-	directory_count = group_descriptor.bg_used_dirs_count;	/* Directories count */
+    unsigned int block_bitmap = group_descriptor.bg_block_bitmap;
+    unsigned int inode_table = group_descriptor.bg_inode_table;
+    unsigned int inode_bitmap = group_descriptor.bg_inode_bitmap;
+    
+    b_free(group, block_bitmap); 
+    i_free(group, inode_bitmap, inode_table); 
+    inodes_summary(inode_table, num_inodes_in_group);
+}
 
+ /* FREE BLOCK ENTRIES BEGIN */
+void b_free(int group, unsigned int block_bitmap){
 
-     printf("%s","%d", "%d", "GROUP", bitmap_block, free_blocks_count, free_inodes_count); 
+    char* byte = (char*) malloc(block_size);
+    unsigned int current = super.s_first_data_block + group * super.s_blocks_per_group;
+    pread(fd, byte, block_size, offset_block(block_bitmap));
 
-    // free block entries
-    pread(fd, &block_bitmap, sizeof(block_bitmap), bitmap_block_address);
-    //  1 -> used, 0 -> free 
+	for (unsigned int i = 0; i < block_size; i++) {
+		char x = byte[i];
+		for (unsigned int j = 0; j < 8; j++) {
+			if (!(1 & x )) {
+				fprintf(stdout, "BFREE,%d\n", current);
+			}
+            current++;
+			x >>= 1;
+		}
+	}
+}
+/* FREE BLOCK ENTRIES END */
 
-    for (int i = 0; i < 1024{
-        char x = block_bitmap[i]; 
-        for (int j = 0; j < 8; j++){
-            if (((x << j) & 128) != 1){
-                printf("%s", "%d", 'BFREE', i*8 +j); 
+/* FREE I-NODES ENTRIES BEGIN */
+void i_free(int group, int block_bitmap, int inode_table){
+
+    char* byte = (char*) malloc(block_size);
+    unsigned int current = 1 + (group * super.s_inodes_per_group);
+    int start_index = current; 
+    
+    pread(fd, byte,(super.s_inodes_per_group/8), offset_block(block_bitmap));
+
+	for (unsigned int i = 0; i < super.s_inodes_per_group/8; i++) {
+		char x = byte[i];
+		for (unsigned int j = 0; j < 8; j++) {
+			if (!(1 & x )) {
+				fprintf(stdout, "IFREE,%d\n", current);
+			}
+            current++;
+			x >>= 1;
+		}
+	}
+}
+
+void gmt_time(time_t epoch_time, char* buffer){
+    time_t temp = epoch_time;
+    struct tm result = *gmtime(&temp);
+    strftime(buffer, 80, "%m/%d/%y %H:%M:%S", &result);
+}
+
+void inodes_summary(int inode_table, unsigned int num_inodes_in_group){
+    unsigned int num_inodes = super.s_inodes_per_group;
+    int curr_inode_location;  
+    unsigned long inode_start = block_size*inode_table; 
+
+    for(int i = 0; i < num_inodes; i++){
+        
+        curr_inode_location = inode_start + i*sizeof(struct ext2_inode);   
+        pread(fd, &curr_inode, sizeof(struct ext2_inode), curr_inode_location);
+        
+        char type;
+        if(curr_inode.i_mode != 0 && curr_inode.i_links_count != 0){
+            if(S_ISDIR(curr_inode.i_mode)){
+                type = 'd';
+            }
+            else if(S_ISREG(curr_inode.i_mode)){
+                type = 'f';
+            }
+            else if(S_ISLNK(curr_inode.i_mode)){
+                type = 's';
+            }
+            else{
+                type = '?';
             }
         }
-        
-    }
 
-    return 0;
+        
+        char c_time[20];
+        char m_time[20];
+        char a_time[20];
+        gmt_time(curr_inode.i_ctime, c_time);
+        gmt_time(curr_inode.i_mtime, m_time);
+        gmt_time(curr_inode.i_atime, a_time);
+
+        //Print inode
+        fprintf(stdout, "INODE,%d,%c,%o,%d,%d,%d,%d,%s,%s,%s,%d,%d\n", i+1, type, curr_inode.i_mode & 0xFFF, curr_inode.i_uid, curr_inode.i_gid,
+        curr_inode.i_links_count, c_time, m_time, a_time, curr_inode.i_size, curr_inode.i_blocks);
+
+        //Print the fifteen block addresses
+        if(type == 's' && curr_inode.i_size < 60){
+            fprintf(stdout, ",%u", curr_inode.i_block[0]);
+            fprintf(stdout, "\n");
+        }
+        else if(type == 'f' || type == 'd' || type == 's'){
+            for(int x = 0; x < EXT2_NUM_BLOCKS; x++){
+                fprintf(stdout, ",%d", curr_inode.i_block[x]);
+            }
+            fprintf(stdout, "\n");
+        }
+
+        //if i-node is directory
+        if (type =='d'){
+            int logical_offset = 0; 
+            for (int i= 0; i < curr_inode.i_blocks; i++){
+
+                unsigned long address = curr_inode.i_block[i]; 
+                struct ext2_dir_entry entry; 
+                int offset_temp = curr_inode.i_block[i]*block_size; 
+
+                if (address != 0){
+                    while (logical_offset < block_size){
+                        pread(fd, &entry, sizeof(entry), offset_temp + logical_offset);
+                        //CHANGE -5 to parent inode number !!!!
+                        fprintf(stdout, "DIRENT,%d,%d,%d,%d,%d,%s\n", -5, logical_offset, entry.inode, entry.rec_len, entry.name_len, entry.name); 
+                        logical_offset +=entry.rec_len; 
+                    }
+                }
+        } 
+        }
+    }
+}
+
+/* INDIRECTBLOCK BEGIN */
+/* INDIRECTBLOCK END */
+
+unsigned long offset_block(unsigned int block) {
+	return 1024+ (block - 1) * block_size;
 }
