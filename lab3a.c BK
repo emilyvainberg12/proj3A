@@ -1,3 +1,4 @@
+
 #include <getopt.h>
 #include <stdio.h>
 #include <errno.h>
@@ -8,17 +9,15 @@
 #include <limits.h>
 #include <string.h>
 #include <stdint.h>
-#include "ext2_fs.h"
+#include <sys/stat.h>
 #include <time.h>
 #include <sys/time.h>
-#include <sys/stat.h>
-#include <sys/stat.h>
 #include <sys/types.h>
-
+#include "ext2_fs.h"
 
 struct ext2_super_block super; 
 struct ext2_group_desc group_descriptor; 
-struct ext2_dir_entry directory;
+struct ext2_dir_entry entry; 
 struct ext2_inode curr_inode; 
 
 int fd = 0; 
@@ -36,7 +35,7 @@ unsigned long bitmap_block_address = 0;
 
 void read_group(int group, int total_groups); 
 void b_free(int group, unsigned int block_bitmap); 
-void i_free(int group, int block_bitmap, int inode_table); 
+void i_free(int group, int block_bitmap); 
 unsigned long offset_block(unsigned int block);
 void inodes_summary(int inode_table, unsigned int num_inodes_in_group);
 void get_time(time_t epoch_time, char* buffer);
@@ -67,17 +66,13 @@ int main(int argc, char *argv[]) {
     }
 
     read_group(0, 1); 
-     
-    // for (int i = 0; i < num_groups; i++){
-    //     read_group(i, num_groups); 
-    // }
     return 0; 
 }
 
 void read_group(int group, int total_groups){
 
     unsigned int tot_blocks_in_group = super.s_blocks_per_group;
-    unsigned int num_inodes_in_group = super.s_inodes_per_group;    //May need to modulo NOTE
+    unsigned int num_inodes_in_group = super.s_inodes_per_group;
 
 	if (group == total_groups - 1) {
 		tot_blocks_in_group = blocks_count - (blocks_per_group * (total_groups - 1));
@@ -108,7 +103,7 @@ void read_group(int group, int total_groups){
     unsigned int inode_bitmap = group_descriptor.bg_inode_bitmap;
     
     b_free(group, block_bitmap); 
-    i_free(group, inode_bitmap, inode_table); 
+    i_free(group, inode_bitmap); 
     inodes_summary(inode_table, num_inodes_in_group);
 }
 
@@ -133,11 +128,10 @@ void b_free(int group, unsigned int block_bitmap){
 /* FREE BLOCK ENTRIES END */
 
 /* FREE I-NODES ENTRIES BEGIN */
-void i_free(int group, int block_bitmap, int inode_table){
+void i_free(int group, int block_bitmap){
 
     char* byte = (char*) malloc(block_size);
     unsigned int current = 1 + (group * super.s_inodes_per_group);
-    int start_index = current; 
     
     pread(fd, byte,(super.s_inodes_per_group/8), offset_block(block_bitmap));
 
@@ -152,16 +146,15 @@ void i_free(int group, int block_bitmap, int inode_table){
 		}
 	}
 }
-
-void get_time(time_t epoch_time, char* buffer){
+void gmt_time(time_t epoch_time, char* buffer){
     time_t temp = epoch_time;
-    struct tm* result = gmtime(&temp);
-    strftime(buffer, 80, "%m/%d/%y %H:%M:%S", result);
+    struct tm result = *gmtime(&temp);
+    strftime(buffer, 80, "%m/%d/%y %H:%M:%S", &result);
 }
+
 
 /* INODES SUMMARY BEGIN */
 void inodes_summary(int inode_table, unsigned int num_inodes_in_group){
-    //unsigned int num_inodes = super.s_inodes_count;
     int curr_inode_location;  
     int inode_start = block_size*inode_table; 
 
@@ -194,8 +187,6 @@ void inodes_summary(int inode_table, unsigned int num_inodes_in_group){
             //Print inode
             fprintf(stdout, "INODE,%d,%c,%o,%d,%d,%d,%s,%s,%s,%d,%d", i+1, type, curr_inode.i_mode & 0xFFF, curr_inode.i_uid, curr_inode.i_gid,
             curr_inode.i_links_count, c_time, m_time, a_time, curr_inode.i_size, curr_inode.i_blocks);
-            // fprintf(stdout, "INODE,%d,%c,%o,%d,%d,%d,%d,%d", i+1, type, curr_inode.i_mode & 0xFFF, curr_inode.i_uid, curr_inode.i_gid,
-            // curr_inode.i_links_count, curr_inode.i_size, curr_inode.i_blocks);
             
             //Print the fifteen block addresses
             if(type == 's' && curr_inode.i_size < 60){
@@ -212,29 +203,94 @@ void inodes_summary(int inode_table, unsigned int num_inodes_in_group){
             //if i-node is directory
             if (type =='d'){
                 int logical_offset = 0; 
-                for (int k= 0; k < curr_inode.i_blocks; k++){
+                for (unsigned int k = 0; k < curr_inode.i_blocks; k++){
 
                     unsigned long address = curr_inode.i_block[k]; 
-                    struct ext2_dir_entry entry; 
                     int offset_temp = curr_inode.i_block[k]*block_size; 
 
                     if (address != 0){
                         while (logical_offset < block_size){
                             pread(fd, &entry, sizeof(entry), offset_temp + logical_offset);
-                            //CHANGE -5 to parent inode number !!!!
                             fprintf(stdout, "DIRENT,%d,%d,%d,%d,%d,'%s'\n", i+1, logical_offset, entry.inode, entry.rec_len, entry.name_len, entry.name); 
                             logical_offset +=entry.rec_len; 
                         }
                     }
                 } 
             }
+
+            uint32_t *block_ptrs = malloc(block_size);
+
+            if (curr_inode.i_block[12] != 0) {
+                uint32_t num_ptrs = block_size / sizeof(uint32_t);
+                pread(fd, block_ptrs, block_size, offset_block(curr_inode.i_block[12]));
+                
+                for (unsigned int j = 0; j < num_ptrs; j++) {
+                    if (block_ptrs[j] != 0) {
+                        fprintf(stdout, "INDIRECT,%d,%d,%d,%d,%d\n", i+1, 1, 12 + j, curr_inode.i_block[12], block_ptrs[j]);
+                    }
+                }
+            } 
+
+            if (curr_inode.i_block[13] != 0) {
+                uint32_t *indir_block_ptrs = malloc(block_size);
+                uint32_t num_ptrs = block_size / sizeof(uint32_t);
+
+                pread(fd, indir_block_ptrs, block_size,  offset_block(curr_inode.i_block[13]));
+
+                for (unsigned int j = 0; j < num_ptrs; j++) {
+                    if (indir_block_ptrs[j] != 0) {
+                        fprintf(stdout, "INDIRECT,%d,%d,%d,%d,%d\n", i+1, 2, 268+j, curr_inode.i_block[13], indir_block_ptrs[j]); 
+
+                        pread(fd, block_ptrs, block_size, offset_block(indir_block_ptrs[j]));
+                          
+                        for (unsigned int k = 0; k < num_ptrs; k++) {
+                            if (block_ptrs[k] != 0) {
+                                fprintf(stdout, "INDIRECT,%d,%d,%d,%d,%d\n", i+1, 1, 268+k, indir_block_ptrs[j], block_ptrs[k]); 
+                            }
+                        }
+                    }
+                }
+            }
+
+            if(curr_inode.i_block[14] != 0){
+                uint32_t *indirect2_ptrs = malloc(block_size);
+                uint32_t num_ptrs = block_size / sizeof(uint32_t);
+
+                pread(fd, indirect2_ptrs, block_size, offset_block(curr_inode.i_block[14]));
+
+                for(int j = 0; j < num_ptrs; j++){
+                    if(indirect2_ptrs[j] != 0){
+                        fprintf(stdout, "INDIRECT,%d,%d,%d,%d,%d\n", i+1, 3, 65804+j, curr_inode.i_block[14], indirect2_ptrs[j]);
+
+                        uint32_t *indirect_ptrs = malloc(block_size);
+                        pread(fd, indirect_ptrs, block_size, offset_block(indirect2_ptrs[j]));
+
+                        for(int k = 0; k < num_ptrs; k++){
+                            if(indirect_ptrs[k] != 0){
+                                fprintf(stdout, "INDIRECT,%d,%d,%d,%d,%d\n", i+1, 2, 65804+k, indirect2_ptrs[j], indirect_ptrs[k]);
+                            }
+
+                            pread(fd, block_ptrs, block_size, offset_block(indirect_ptrs[k]));
+
+                            for(int h = 0; h < num_ptrs; h++){
+                                if(block_ptrs[h] != 0){
+                                    fprintf(stdout, "INDIRECT,%d,%d,%d,%d,%d\n", i+1, 1, 65804+h, indirect_ptrs[k], block_ptrs[h]);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
         }
     }
 }
-/* INODES SUMMARY END */
 
-/* INDIRECTBLOCK BEGIN */
-/* INDIRECTBLOCK END */
+void get_time(time_t epoch_time, char* buffer){
+    time_t temp = epoch_time;
+    struct tm* result = gmtime(&temp);
+    strftime(buffer, 80, "%m/%d/%y %H:%M:%S", result);
+}
 
 unsigned long offset_block(unsigned int block) {
 	return 1024+ (block - 1) * block_size;
